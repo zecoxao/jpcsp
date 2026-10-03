@@ -114,6 +114,11 @@ public class PRX {
 		}
     }
     
+    // Set by DecryptPRX to report whether the regenerated header SHA1 matched.
+    // Used to drive the pspdecrypt-style "try every type until the hash verifies"
+    // fallback in DecryptAndUncompressPRX.
+    private boolean lastShaMatched = true;
+
     private TAG_INFO g_tagInfo[] = {
     	// 16-bytes keys
         new TAG_INFO(0x4C949CF0, KeyVault.keys210_vita_k0, 0x43),
@@ -552,6 +557,47 @@ public class PRX {
         }
 
         int resultSize = DecryptPRX(resultBuffer, size, type, xor, key);
+
+        // Like pspdecrypt (pspDecryptPRX): the PRX header does not reliably
+        // indicate which decrypt type to use, so if the type derived from
+        // decryptMode does not regenerate a valid header SHA1, try the other
+        // types on a fresh copy of the input and keep the first one that
+        // verifies. This never regresses a module that already verifies on the
+        // first attempt (the loop is only entered when the primary type failed).
+        if (resultSize >= 0 && !lastShaMatched) {
+        	for (int candidateType : new int[] { 2, 9, 6, 5, 3, 1, 0, 7, 10 }) {
+        		if (candidateType == type) {
+        			continue;
+        		}
+
+        		byte[] retryBuffer = new byte[Math.max(elfSize, pspSize)];
+        		System.arraycopy(buf, 0, retryBuffer, 0, Math.min(size, retryBuffer.length));
+
+        		int retrySize;
+        		try {
+        			retrySize = DecryptPRX(retryBuffer, size, candidateType, xor, key);
+        		} catch (RuntimeException e) {
+        			// A type that does not apply to this module may index out of
+        			// range; just move on to the next candidate type.
+        			lastShaMatched = false;
+        			continue;
+        		}
+        		if (retrySize >= 0 && lastShaMatched) {
+        			if (log.isDebugEnabled()) {
+        				log.debug(String.format("DecryptAndUncompressPRX: type %d (from decryptMode) failed the header SHA1, type %d verified for tag=0x%08X", type, candidateType, tag));
+        			}
+        			resultBuffer = retryBuffer;
+        			resultSize = retrySize;
+        			type = candidateType;
+        			break;
+        		}
+        	}
+
+        	if (!lastShaMatched) {
+        		log.error(String.format("DecryptAndUncompressPRX: no decrypt type produced a valid header SHA1 for tag=0x%08X (decryptMode=0x%X)", tag, decryptMode));
+        	}
+        }
+
         if (resultSize < 0) {
         	log.error(String.format("DecryptPRX returning %d", resultSize));
         	return null;
@@ -800,6 +846,10 @@ public class PRX {
 
     public int DecryptPRX(byte[] buf, int size, int type, byte[] xor1, byte[] xor2, boolean forceNewMethod, TAG_INFO pti) {
     	int result = 0;
+
+    	// Reset the SHA1-match flag for this attempt. Paths that do not reach the
+    	// header SHA1 check (e.g. the old 144-byte method) leave it "matched".
+    	lastShaMatched = true;
 
         if (pti.xor1 != null && xor1 == null) {
         	xor1 = intArrayToByteArray(pti.xor1);
@@ -1111,8 +1161,9 @@ public class PRX {
             	log.error(String.format("DecryptPRX: KIRK command PSP_KIRK_CMD_SHA1_HASH returned error %d", result));
             }
 
-            if (Utilities.memcmp(buf2, 0, buf4, 0, 0x14) != 0) {
-            	log.error(String.format("DecryptPRX: SHA1 Hash not matching for tag=0x%08X, type=%d, code=0x%02X (computed=%s expected=%s)", tag, type, pti.code, Utilities.getMemoryDump(buf2, 0, 0x14), Utilities.getMemoryDump(buf4, 0, 0x14)));
+            lastShaMatched = Utilities.memcmp(buf2, 0, buf4, 0, 0x14) == 0;
+            if (!lastShaMatched && log.isDebugEnabled()) {
+            	log.debug(String.format("DecryptPRX: SHA1 Hash not matching for tag=0x%08X, type=%d, code=0x%02X (computed=%s expected=%s)", tag, type, pti.code, Utilities.getMemoryDump(buf2, 0, 0x14), Utilities.getMemoryDump(buf4, 0, 0x14)));
             }
 
             if ((type >= 2 && type <= 7) || type == 9 || type == 10) {

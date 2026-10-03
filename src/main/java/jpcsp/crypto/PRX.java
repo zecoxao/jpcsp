@@ -556,46 +556,11 @@ public class PRX {
     			break;
         }
 
-        int resultSize = DecryptPRX(resultBuffer, size, type, xor, key);
-
-        // Like pspdecrypt (pspDecryptPRX): the PRX header does not reliably
-        // indicate which decrypt type to use, so if the type derived from
-        // decryptMode does not regenerate a valid header SHA1, try the other
-        // types on a fresh copy of the input and keep the first one that
-        // verifies. This never regresses a module that already verifies on the
-        // first attempt (the loop is only entered when the primary type failed).
+        // Decrypt trying every type until the header SHA1 verifies (pspdecrypt
+        // style). The type derived from decryptMode is the preferred attempt.
+        int resultSize = DecryptPRXTryAllTypes(resultBuffer, size, type, xor, key);
         if (resultSize >= 0 && !lastShaMatched) {
-        	for (int candidateType : new int[] { 2, 9, 6, 5, 3, 1, 0, 7, 10 }) {
-        		if (candidateType == type) {
-        			continue;
-        		}
-
-        		byte[] retryBuffer = new byte[Math.max(elfSize, pspSize)];
-        		System.arraycopy(buf, 0, retryBuffer, 0, Math.min(size, retryBuffer.length));
-
-        		int retrySize;
-        		try {
-        			retrySize = DecryptPRX(retryBuffer, size, candidateType, xor, key);
-        		} catch (RuntimeException e) {
-        			// A type that does not apply to this module may index out of
-        			// range; just move on to the next candidate type.
-        			lastShaMatched = false;
-        			continue;
-        		}
-        		if (retrySize >= 0 && lastShaMatched) {
-        			if (log.isDebugEnabled()) {
-        				log.debug(String.format("DecryptAndUncompressPRX: type %d (from decryptMode) failed the header SHA1, type %d verified for tag=0x%08X", type, candidateType, tag));
-        			}
-        			resultBuffer = retryBuffer;
-        			resultSize = retrySize;
-        			type = candidateType;
-        			break;
-        		}
-        	}
-
-        	if (!lastShaMatched) {
-        		log.error(String.format("DecryptAndUncompressPRX: no decrypt type produced a valid header SHA1 for tag=0x%08X (decryptMode=0x%X)", tag, decryptMode));
-        	}
+        	log.error(String.format("DecryptAndUncompressPRX: no decrypt type produced a valid header SHA1 for tag=0x%08X (decryptMode=0x%X)", tag, decryptMode));
         }
 
         if (resultSize < 0) {
@@ -824,6 +789,68 @@ public class PRX {
     	} catch (IOException e) {
 			log.error(e.toString());
 		}
+    }
+
+    // Decrypt types tried, in order, by DecryptPRXTryAllTypes (mirrors pspdecrypt).
+    private static final int[] DECRYPT_TRY_TYPES = { 2, 9, 6, 5, 3, 1, 0, 7, 10 };
+
+    /**
+     * Decrypt a PRX trying every decrypt type until the regenerated header SHA1
+     * verifies, like pspdecrypt's pspDecryptPRX. The preferred type (derived
+     * from decryptMode, or a module-specific default) is tried first; the
+     * remaining types are then tried on a fresh copy of the input. The buffer
+     * is decrypted in place. If no type verifies, the preferred type's result
+     * is restored, so behaviour matches the previous single-type decryption
+     * (non-regressive). Check lastShaMatched afterwards to know if a type
+     * actually verified.
+     */
+    public int DecryptPRXTryAllTypes(byte[] buf, int size, int preferredType, byte[] xor1, byte[] xor2) {
+    	int tag = readUnaligned32(buf, 0xD0);
+
+    	// Unknown tag: nothing to try, let DecryptPRX report it once.
+    	if (GetTagInfo(tag) == null) {
+    		return DecryptPRX(buf, size, preferredType, xor1, xor2);
+    	}
+
+    	byte[] original = java.util.Arrays.copyOf(buf, buf.length);
+
+    	int result = tryDecryptPRXType(buf, size, preferredType, xor1, xor2);
+    	if (result >= 0 && lastShaMatched) {
+    		return result;
+    	}
+
+    	// Remember the preferred-type outcome as the non-regressive fallback.
+    	byte[] preferredBuf = java.util.Arrays.copyOf(buf, buf.length);
+    	int preferredResult = result;
+
+    	for (int candidateType : DECRYPT_TRY_TYPES) {
+    		if (candidateType == preferredType) {
+    			continue;
+    		}
+
+    		System.arraycopy(original, 0, buf, 0, buf.length);
+    		int r = tryDecryptPRXType(buf, size, candidateType, xor1, xor2);
+    		if (r >= 0 && lastShaMatched) {
+    			if (log.isDebugEnabled()) {
+    				log.debug(String.format("DecryptPRXTryAllTypes: preferred type %d failed the header SHA1, type %d verified for tag=0x%08X", preferredType, candidateType, tag));
+    			}
+    			return r;
+    		}
+    	}
+
+    	// Nothing verified: restore the preferred-type result (previous behaviour).
+    	System.arraycopy(preferredBuf, 0, buf, 0, buf.length);
+    	lastShaMatched = false;
+    	return preferredResult;
+    }
+
+    private int tryDecryptPRXType(byte[] buf, int size, int type, byte[] xor1, byte[] xor2) {
+    	try {
+    		return DecryptPRX(buf, size, type, xor1, xor2);
+    	} catch (RuntimeException e) {
+    		lastShaMatched = false;
+    		return -1;
+    	}
     }
 
     public int DecryptPRX(byte[] buf, int size, int type, byte[] xor1, byte[] xor2) {

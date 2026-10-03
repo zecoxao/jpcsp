@@ -239,7 +239,7 @@ public class sceResmgr extends HLEModule {
     	} else {
     		byte[] buf = buffer.getArray8(bufferSize);
 
-	    	int result = new CryptoEngine().getPRXEngine().DecryptPRX(buf, bufferSize, 9, null, null);
+	    	int result = new CryptoEngine().getPRXEngine().DecryptPRXTryAllTypes(buf, bufferSize, 9, null, null);
 	    	if (result < 0) {
 	    		log.error(String.format("sceResmgr_9DC14891 returning error 0x%08X", result));
 	    		return result;

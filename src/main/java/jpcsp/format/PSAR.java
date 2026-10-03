@@ -690,7 +690,7 @@ public class PSAR {
 				log.error(String.format("pspDecryptTable tag=0x%08X", tag));
 				break;
 		}
-		int retSize = crypto.getPRXEngine().DecryptPRX(buf, size, type, null, null);
+		int retSize = crypto.getPRXEngine().DecryptPRXTryAllTypes(buf, size, type, null, null);
 		if (retSize < 0) {
 			TPointer32 resultSizeAddr = Utilities.allocatePointer32(4);
 			int res = Modules.sceMesgdModule.hleMesgd_driver_102DC8AF(buf, 0, size, resultSizeAddr);

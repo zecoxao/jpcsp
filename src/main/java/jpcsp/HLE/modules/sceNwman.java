@@ -49,7 +49,7 @@ public class sceNwman extends HLEModule {
     			return -301;
         }
 
-    	int result = prxEngine.DecryptPRX(buffer, bufferSize, type, null, null);
+    	int result = prxEngine.DecryptPRXTryAllTypes(buffer, bufferSize, type, null, null);
 
     	int resultSize = 0;
     	if (result > 0) {
